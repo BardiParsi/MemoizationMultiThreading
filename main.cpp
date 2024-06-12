@@ -15,7 +15,6 @@ using std::endl;
 using std::cin;
 /*
 This is a sample work of "Memoization" not "Memorization" in multi-threading process
-This program runs on divices with more than 6 CPU threads
 This technique is used to save the result of the most repeated functions and tasks inside a cache
 If the cache already has the result of 'n' the result will be returned from the cache
 If the result of 'n+1' is needed; memoization uses the result of 'n' from the cache and with O(1) calculates the
