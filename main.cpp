@@ -5,7 +5,9 @@
 #include <future>
 #include <vector>
 #include <mutex>
+#include <thread>
 #include <condition_variable>
+#include <atomic>
 #include <cmath>
 #include <stdexcept>
 #include <cassert>
@@ -13,6 +15,7 @@
 using std::cout;
 using std::endl;
 using std::cin;
+// Fibonacci is used only as a simulator or example of a heavily used function for demonstration purposes
 /*
 This is a sample work of "Memoization" not "Memorization" in multi-threading process
 This technique is used to save the result of the most repeated functions and tasks inside a cache
@@ -21,8 +24,11 @@ If the result of 'n+1' is needed; memoization uses the result of 'n' from the ca
 result for 'n+1'.
 */
 const size_t CPUThread = std::thread::hardware_concurrency();
-std::mutex mtx;
+std::mutex mtx; // To use inside Fib function
+std::mutex mtxMain; // For threads in main() function
+std::mutex mtxPool;
 std::condition_variable condVar;
+static std::atomic<int> POOLLAUNCHER{0};
 
 void fibLoop(std::unordered_map<int, int>& memo, int loopLimit, int start, int endChunk, int& counter){
     if (start <= 1) {
@@ -33,7 +39,7 @@ void fibLoop(std::unordered_map<int, int>& memo, int loopLimit, int start, int e
     for (int i = start; i <= endChunk; i++) {
         std::lock_guard<std::mutex> lock(mtx);
         if (memo.find(i) == memo.end()) {
-            if (i >= loopLimit){
+           if (i >= loopLimit){
                 break;
                 }
             else {
@@ -58,6 +64,7 @@ int fib(int target, const int CPUPool, std::unordered_map<int, int>& memo) {
     if (it != memo.end()) {
         auto then = std::chrono::high_resolution_clock::now();
         auto microSecond = std::chrono::duration_cast<std::chrono::microseconds>(then - now);
+        std::lock_guard<std::mutex> lock(mtxMain);
         cout << "The total time duration to calculate the Fib of " << target << " is: " << microSecond.count() << " microseconds" << endl;
         cout << "The number of repeated process to find Fib of " << target << " is: 0 (memoized)" << endl;
         return it->second; // Return memoized result
@@ -92,6 +99,7 @@ int fib(int target, const int CPUPool, std::unordered_map<int, int>& memo) {
     }
     auto then = std::chrono::high_resolution_clock::now();
     auto microSecond = std::chrono::duration_cast<std::chrono::microseconds>(then - now);
+    std::lock_guard<std::mutex> lock(mtxMain);
     cout << "The total time duration to calculate the Fib of " << target << " is: " << microSecond.count() << " microseconds" << endl;
     cout << "The number of repeated process to find Fib of " << target << " is: " << counter << endl;
     // Return the result for n
@@ -99,63 +107,70 @@ int fib(int target, const int CPUPool, std::unordered_map<int, int>& memo) {
 }
 
 int main() {
-    std::mutex mtxMain;
     std::unordered_map<int, int> memo; // Memoization cache
     // The thread pool must be always less than 'n' operations by two
     // Initial data input into 'Memoization' should start with less operation counts than the thread pool by 2
     const int CPUPool = static_cast<int>(CPUThread/4);
+    // Main Thread pool for multi calling the function for excessive use purposes
+    const int ThreadPool = static_cast<int>(CPUThread/2);
     // We cannot run more threads than the number of calculations.
     assert (CPUPool < 7 && "Alert! CPUPool must me less than the smallest calculation.\n");
-    int x = 8; // Fibonacci number to calculate
-    if (CPUPool >= (x-1)) {
-        throw std::runtime_error("We cannot run equal or more than X threads.");
-    }
-    try{
-        int result = fib(x, CPUPool ,memo);
-        std::cout << "Fibonacci(" << x << ") = " << result << std::endl;
-    }
-    catch(const std::runtime_error& e) {
+    // Make sure we dedicate more threads for concurrency function calling
+    assert (ThreadPool > CPUPool);
+    std::vector<std::jthread> threads1;
+
+    for (int i = 0; i < ThreadPool; i++) {
+        try {
+            threads1.emplace_back([&, i](){
+                int result = fib(i, CPUPool ,memo);
+                std::lock_guard<std::mutex> lock(mtxMain);
+                std::cout << "Fibonacci(" << (i) << ") = " << result << std::endl;
+            });
+        }
+        catch(const std::runtime_error& e) {
         std::cerr << "The number of threads inside a pool must be less than the numbers of processes" << e.what() << endl;
-    }
-    catch(const std::exception& e){
+        }
+        catch(const std::exception& e){
         std::cerr << "The exception is caught!" << e.what() << endl;
-    }
-    catch(...) {
+        }
+        catch(...) {
         std::cerr << "Unknown Error!" << endl;
+        }
     }
+    for (auto& thread : threads1) {
+        thread.join();
+    }
+    POOLLAUNCHER.fetch_add(1, std::memory_order::relaxed);
     {
-    std::unique_lock<std::mutex> lock(mtxMain);
-    condVar.wait(lock, [&memo, x]() { return memo.find(x) != memo.end(); });
+        std::unique_lock<std::mutex> poolLock(mtxPool);
+        condVar.wait(poolLock, [&](){ return POOLLAUNCHER == 1; });
+        poolLock.unlock();
+        condVar.notify_one();
+        POOLLAUNCHER.fetch_add(1, std::memory_order::relaxed);
     }
-    condVar.notify_one();
-
-    int j = 21;
-    try{
-        int result = fib(j, CPUPool ,memo);
-        std::cout << "Fibonacci(" << j << ") = " << result << std::endl;
-    }
-    catch(const std::exception& e){
+    std::vector<std::jthread> threads2;
+    for (int i = 0; i < ThreadPool; i++) {
+        try {
+            int val = i * 10;
+            threads2.emplace_back([&, val](){
+                int result = fib(val, CPUPool ,memo);
+                std::lock_guard<std::mutex> lock(mtxMain);
+                std::cout << "Fibonacci(" << (val) << ") = " << result << std::endl;
+            });
+        }
+        catch(const std::runtime_error& e) {
+        std::cerr << "The number of threads inside a pool must be less than the numbers of processes" << e.what() << endl;
+        }
+        catch(const std::exception& e){
         std::cerr << "The exception is caught!" << e.what() << endl;
+        }
+        catch(...) {
+        std::cerr << "Unknown Error!" << endl;
+        }
     }
-    {
-    std::unique_lock<std::mutex> lock(mtxMain);
-    condVar.wait(lock, [&memo, j]() { return memo.find(j) != memo.end(); });
+    for (auto& thread : threads2) {
+        thread.join();
     }
-    condVar.notify_one();
-
-    int y = 4;
-    try{
-        int result = fib(y, CPUPool ,memo);
-        std::cout << "Fibonacci(" << y << ") = " << result << std::endl;
-    }
-    catch(const std::exception& e){
-        std::cerr << "The exception is caught!" << e.what() << endl;
-    }
-    {
-    std::unique_lock<std::mutex> lock(mtxMain);
-    condVar.wait(lock, [&memo, y]() { return memo.find(y) != memo.end(); });
-    }
-    condVar.notify_all();
 
     cin.get();
 
